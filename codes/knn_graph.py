@@ -4,17 +4,20 @@ import networkx as nx
 import matplotlib.pyplot as plt
 import numpy as np
 from mlxtend.data import loadlocal_mnist
-from networkx.algorithms import centrality
+from networkx.algorithms import centrality, clustering
 from sklearn.semi_supervised import LabelSpreading
 from sklearn.metrics import classification_report, f1_score
 
 from sklearn.model_selection import train_test_split
+from label_propagation import LGC
 
-
-def print_graph(knn_graph_obj, img_name='none'):
+def print_graph(knn_graph_obj, node_labels, img_name='none' ):
         print('[INFO] Drawing graph')
         plt.figure(figsize=(18,18))
-        nx.draw(knn_graph_obj, with_labels=True, font_weight='bold')
+        pos = nx.spring_layout(knn_graph_obj)       
+        nx.draw(knn_graph_obj,pos, with_labels=True, font_weight='bold')
+        
+        nx.draw_networkx_nodes(knn_graph_obj,pos, nodelist=node_labels, node_color="r")
         plt.savefig('../results/'+img_name+'.png', dpi=600)
 
 def write_on_file(knn_graph_obj, obj_name='none'):
@@ -43,55 +46,89 @@ def open_csv_dataframe(dataset):
         return X_load, y_load
 
 
+def get_centrality_labels(knn_graph_obj, type='degree'):
+        import random
+
+        if type == 'degree':
+                degree_centrality_knn = pd.DataFrame.from_dict(centrality.degree_centrality(knn_graph_obj), orient='index', columns=['value'])
+
+                node_toget_labels = degree_centrality_knn.sort_values(by = 'value', ascending = False).index[0:int(perc_labeled*len(degree_centrality_knn.index))].tolist()
+        elif type == 'closeness':
+                closeness_centrality_knn = pd.DataFrame.from_dict(centrality.closeness_centrality(knn_graph_obj), orient='index', columns=['value'])
+
+                node_toget_labels = closeness_centrality_knn.sort_values(by = 'value', ascending = False).index[0:int(perc_labeled*len(closeness_centrality_knn.index))].tolist()
+        elif type == 'betweenness':
+                betweenness_centrality_knn = pd.DataFrame.from_dict(centrality.betweenness_centrality(knn_graph_obj), orient='index', columns=['value'])
+
+                node_toget_labels = betweenness_centrality_knn.sort_values(by = 'value', ascending = False).index[0:int(perc_labeled*len(betweenness_centrality_knn.index))].tolist()
+        else:
+                indexes = list(knn_graph_obj.nodes)
+                #print(indexes)
+                node_toget_labels = random.sample(indexes, int(perc_labeled*len(indexes)))
+                #print(node_toget_labels)
+
+        return node_toget_labels
 
 dataset = 'digits'
 X_load, y_load = open_csv_dataframe(dataset)
 #neighbors = int(np.sqrt(len(X_loadinho)))
 neighbors = 5
 
-X_load_train, X_load_test, y_load_train, y_load_test = train_test_split(X_load, y_load, train_size=0.7, random_state=42)
-
-
 print('[INFO] Contructing graph')
-knn_graph = kneighbors_graph(X_load_train, neighbors, mode = 'distance') #metrica de distância default = euclidiana
+knn_graph = kneighbors_graph(X_load, neighbors, mode = 'distance') #metrica de distância default = euclidiana
 
 print('[INFO] Converting to network x graph object')
 knn_graph_obj = nx.from_scipy_sparse_matrix(knn_graph, create_using=nx.Graph())
 
-for perc_labeled in [0.01, 0.05, 0.1]:
-        #print_graph(knn_graph_obj, dataset)
-        #write_on_file(knn_graph_obj, dataset)
+metric_list = ['degreee','closeness','betweenness','random']
 
-        degree_centrality_knn = pd.DataFrame.from_dict(centrality.degree_centrality(knn_graph_obj), orient='index', columns=['value'])
+scores = pd.DataFrame(columns=['centrality', 'label_percentage', 'score'])
 
-        node_toget_labels = degree_centrality_knn.sort_values(by = 'value', ascending = False).index[0:int(perc_labeled*len(degree_centrality_knn.index))]
-        #node_toget_labels = [10, 20, 50, 55, 80, 99, 300, 413, 555, 762, 875, 1003, 1234, 1254, 1442]
+for metric in metric_list:
+        for perc_labeled in [0.01, 0.05, 0.1]:
+                #write_on_file(knn_graph_obj, dataset)
+                node_toget_labels = get_centrality_labels(knn_graph_obj, metric)
+        
+                print_graph(knn_graph_obj, node_toget_labels, str(int(perc_labeled*100))+'_'+metric+'_'+dataset)
 
-        y_loadinho = y_load_train.filter(items = node_toget_labels, axis = 0)
-        X_loadinho = X_load_train.filter(items = node_toget_labels, axis = 0)
+                y_loadinho = y_load.filter(items = node_toget_labels, axis = 0).sort_index()
+                X_loadinho = X_load.filter(items = node_toget_labels, axis = 0).sort_index()
 
-        datasetinho = pd.concat([X_loadinho, y_loadinho], axis = 1)
+                lgc = LGC(nx.to_scipy_sparse_matrix(knn_graph_obj,nodelist=X_load.index))
 
-        #datasetinho.to_csv('digits1.csv')
+                lgc.fit(X_loadinho.index, y_loadinho)
 
-        X_loadao = X_load_train[~X_load_train.index.isin(node_toget_labels)]
-        X_loadao['y'] = -1
+                #datasetinho = pd.concat([X_loadinho, y_loadinho], axis = 1)
 
-        final_dataset = pd.concat([X_loadao, datasetinho], axis=0).sort_index()
+                #datasetinho.to_csv('digits1.csv')
 
-        #final_dataset.to_csv('digits05_final.csv')
+                X_loadao = X_load[~X_load.index.isin(node_toget_labels)]
+                y_loadao = y_load[~y_load.index.isin(node_toget_labels)]
+                #X_loadao['y'] = -1
 
-        lp_model = LabelSpreading()
-        X = final_dataset.drop('y', axis = 1)
-        labels = final_dataset['y']
-        lp_model.fit(X, labels)
+                y_predict = lgc.predict(X_loadao.index)
+                #final_dataset = pd.concat([X_loadao, datasetinho], axis=0).sort_index()
 
-        #predicted_labels = lp_model.transduction_[X_load_train.index]
+                #final_dataset.to_csv('digits'+str(int(perc_labeled*100))+'_'+metric+'_final.csv')
 
-        #print(classification_report(y_load[y_load.index.isin(X_loadao.index)], predicted_labels))
+                #lp_model = LabelSpreading()
+                #X = final_dataset.drop('y', axis = 1)
+                #labels = final_dataset['y']
+                #lp_model.fit(X, labels)
 
-        y_predict = lp_model.predict(X_load_test)
-        print(f1_score(y_load_test, y_predict))
-        txt_file = open(str(int(perc_labeled*100))+"perc_digits.txt","a") 
-        txt_file.write(classification_report(y_load_test, y_predict))
-        txt_file.close() 
+                #predicted_labels = lp_model.transduction_[X_load_train.index]
+
+                #print(classification_report(y_load[y_load.index.isin(X_loadao.index)], predicted_labels))
+
+                #y_predict = lp_model.predict(X_load_test)
+                score = f1_score(y_loadao, y_predict)
+                print(score)
+                scores = scores.append(pd.DataFrame(
+                        {'centrality':[metric], 
+                        'label_percentage':[perc_labeled], 
+                        'score':[score]}))
+                #txt_file = open(str(int(perc_labeled*100))+"perc_digits_"+metric+".txt","a") 
+                #txt_file.write(classification_report(y_load_test, y_predict))
+                #txt_file.close() 
+
+scores.to_csv(dataset+'_scores.csv', index=False)  
